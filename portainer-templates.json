@@ -1,0 +1,99 @@
+{
+  "version": "2",
+  "templates": [
+    {
+      "type": 3,
+      "title": "Traefik Reverse Proxy",
+      "description": "Traefik v3 reverse proxy with automatic Let's Encrypt TLS, Docker provider, and file-based dynamic configuration.",
+      "categories": ["Reverse Proxy", "Networking"],
+      "platform": "linux",
+      "logo": "https://raw.githubusercontent.com/traefik/traefik/master/docs/content/assets/img/traefik.logo.png",
+      "repository": {
+        "url": "https://github.com/jusecdev/netbird-authentik-setup",
+        "stackfile": "traefik/docker-compose.yml"
+      },
+      "note": "After deploying, place dynamic configuration files in the ./dynamic/ directory. Traefik auto-reloads on file changes."
+    },
+    {
+      "type": 3,
+      "title": "Authentik (Traefik)",
+      "description": "Authentik Identity Provider with Traefik reverse proxy integration. Uses Docker labels for automatic service discovery.",
+      "categories": ["Identity", "Authentication"],
+      "platform": "linux",
+      "logo": "https://raw.githubusercontent.com/goauthentik/authentik/main/web/icons/icon.png",
+      "repository": {
+        "url": "https://github.com/jusecdev/netbird-authentik-setup",
+        "stackfile": "authentik/docker-compose.traefik.yml"
+      },
+      "env": [
+        {
+          "name": "PG_PASS",
+          "label": "PostgreSQL Password",
+          "description": "Password for the Authentik PostgreSQL database"
+        },
+        {
+          "name": "AUTHENTIK_SECRET_KEY",
+          "label": "Authentik Secret Key",
+          "description": "Secret key for Authentik (generate with: openssl rand -base64 60)"
+        },
+        {
+          "name": "AUTHENTIK_HOST",
+          "label": "Authentik Domain",
+          "description": "Public domain for Authentik (e.g. auth.example.com)",
+          "default": "auth.example.com"
+        },
+        {
+          "name": "AUTHENTIK_TAG",
+          "label": "Authentik Version",
+          "description": "Authentik Docker image tag",
+          "default": "2025.10.1"
+        }
+      ],
+      "note": "Requires an existing Traefik instance with the 'traefik_net' Docker network. Run authentik-init.sh first to generate secrets, or provide them manually via the environment variables above."
+    },
+    {
+      "type": 3,
+      "title": "Authentik (Caddy)",
+      "description": "Authentik Identity Provider with Caddy reverse proxy integration.",
+      "categories": ["Identity", "Authentication"],
+      "platform": "linux",
+      "logo": "https://raw.githubusercontent.com/goauthentik/authentik/main/web/icons/icon.png",
+      "repository": {
+        "url": "https://github.com/jusecdev/netbird-authentik-setup",
+        "stackfile": "authentik/docker-compose.yml"
+      },
+      "env": [
+        {
+          "name": "PG_PASS",
+          "label": "PostgreSQL Password",
+          "description": "Password for the Authentik PostgreSQL database"
+        },
+        {
+          "name": "AUTHENTIK_SECRET_KEY",
+          "label": "Authentik Secret Key",
+          "description": "Secret key for Authentik (generate with: openssl rand -base64 60)"
+        },
+        {
+          "name": "AUTHENTIK_TAG",
+          "label": "Authentik Version",
+          "description": "Authentik Docker image tag",
+          "default": "2025.10.1"
+        }
+      ],
+      "note": "Requires an existing Caddy instance with the 'caddy_net' Docker network. Run authentik-init.sh first to generate secrets."
+    },
+    {
+      "type": 3,
+      "title": "Caddy Reverse Proxy",
+      "description": "Caddy reverse proxy with automatic HTTPS.",
+      "categories": ["Reverse Proxy", "Networking"],
+      "platform": "linux",
+      "logo": "https://caddyserver.com/old/resources/images/caddy-circle-lock.svg",
+      "repository": {
+        "url": "https://github.com/jusecdev/netbird-authentik-setup",
+        "stackfile": "caddy/docker-compose.yml"
+      },
+      "note": "After deploying, edit the Caddyfile to configure your sites. Use generate-authentik-caddyfile.sh for Authentik integration."
+    }
+  ]
+}
