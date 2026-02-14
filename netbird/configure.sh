@@ -90,6 +90,97 @@ EOF
 }
 
 ########################################
+# Helper: generate Traefik dynamic config snippet (proxy_docker)
+########################################
+
+generate_traefik_snippet_proxy_docker() {
+  cat <<EOF
+# NetBird – Traefik dynamic config (shared network: ${NETBIRD_REVERSE_PROXY_NETWORK})
+# Place this file in your Traefik dynamic configuration directory.
+
+http:
+  routers:
+    nb-relay:
+      rule: "Host(\\\`${NETBIRD_DOMAIN}\\\`) && PathPrefix(\\\`/relay\\\`)"
+      entryPoints: [websecure]
+      service: nb-relay
+      tls: { certResolver: letsencrypt }
+      priority: 10
+      middlewares: [nb-security-headers]
+    nb-signal-ws:
+      rule: "Host(\\\`${NETBIRD_DOMAIN}\\\`) && PathPrefix(\\\`/ws-proxy/signal\\\`)"
+      entryPoints: [websecure]
+      service: nb-signal-http
+      tls: { certResolver: letsencrypt }
+      priority: 20
+      middlewares: [nb-security-headers]
+    nb-signal-grpc:
+      rule: "Host(\\\`${NETBIRD_DOMAIN}\\\`) && PathPrefix(\\\`/signalexchange.SignalExchange/\\\`)"
+      entryPoints: [websecure]
+      service: nb-signal-grpc
+      tls: { certResolver: letsencrypt }
+      priority: 20
+    nb-mgmt-api:
+      rule: "Host(\\\`${NETBIRD_DOMAIN}\\\`) && PathPrefix(\\\`/api/\\\`)"
+      entryPoints: [websecure]
+      service: nb-mgmt-http
+      tls: { certResolver: letsencrypt }
+      priority: 20
+      middlewares: [nb-security-headers]
+    nb-mgmt-ws:
+      rule: "Host(\\\`${NETBIRD_DOMAIN}\\\`) && PathPrefix(\\\`/ws-proxy/management\\\`)"
+      entryPoints: [websecure]
+      service: nb-mgmt-http
+      tls: { certResolver: letsencrypt }
+      priority: 20
+      middlewares: [nb-security-headers]
+    nb-mgmt-grpc:
+      rule: "Host(\\\`${NETBIRD_DOMAIN}\\\`) && PathPrefix(\\\`/management.ManagementService/\\\`)"
+      entryPoints: [websecure]
+      service: nb-mgmt-grpc
+      tls: { certResolver: letsencrypt }
+      priority: 20
+    nb-dashboard:
+      rule: "Host(\\\`${NETBIRD_DOMAIN}\\\`)"
+      entryPoints: [websecure]
+      service: nb-dashboard
+      tls: { certResolver: letsencrypt }
+      priority: 1
+      middlewares: [nb-security-headers]
+
+  services:
+    nb-relay:
+      loadBalancer:
+        servers: [{ url: "http://relay:${NETBIRD_RELAY_PORT}" }]
+    nb-signal-http:
+      loadBalancer:
+        servers: [{ url: "http://signal:${NETBIRD_SIGNAL_PORT}" }]
+    nb-signal-grpc:
+      loadBalancer:
+        servers: [{ url: "h2c://signal:${NETBIRD_SIGNAL_PORT}" }]
+    nb-mgmt-http:
+      loadBalancer:
+        servers: [{ url: "http://management:${NETBIRD_MGMT_API_PORT}" }]
+    nb-mgmt-grpc:
+      loadBalancer:
+        servers: [{ url: "h2c://management:${NETBIRD_MGMT_API_PORT}" }]
+    nb-dashboard:
+      loadBalancer:
+        servers: [{ url: "http://dashboard:${NETBIRD_DASHBOARD_PORT}" }]
+
+  middlewares:
+    nb-security-headers:
+      headers:
+        stsSeconds: 3600
+        contentTypeNosniff: true
+        frameDeny: true
+        referrerPolicy: "strict-origin-when-cross-origin"
+        customResponseHeaders:
+          Server: ""
+EOF
+}
+
+########################################
 # Helper: find Caddyfile
 ########################################
 
@@ -216,12 +307,12 @@ restart_caddy_for_caddyfile() {
 DEPLOYMENT_MODE="${NETBIRD_DEPLOYMENT_MODE:-standalone}"
 
 case "$DEPLOYMENT_MODE" in
-  standalone|proxy_docker|proxy_external|proxy_docker_caddy)
+  standalone|proxy_docker|proxy_external|proxy_docker_caddy|proxy_docker_traefik)
     echo "Using deployment mode: $DEPLOYMENT_MODE"
     ;;
   *)
     echo "Invalid NETBIRD_DEPLOYMENT_MODE='$DEPLOYMENT_MODE'."
-    echo "Valid values: standalone, proxy_docker, proxy_external, proxy_docker_caddy"
+    echo "Valid values: standalone, proxy_docker, proxy_external, proxy_docker_caddy, proxy_docker_traefik"
     exit 1
     ;;
 esac
@@ -428,7 +519,7 @@ case "$DEPLOYMENT_MODE" in
     : "${NETBIRD_SIGNAL_PUBLIC_PORT:=$NETBIRD_SIGNAL_PORT}"
     ;;
 
-  proxy_docker|proxy_external|proxy_docker_caddy)
+  proxy_docker|proxy_external|proxy_docker_caddy|proxy_docker_traefik)
     NETBIRD_DISABLE_LETSENCRYPT=true
     export NETBIRD_DISABLE_LETSENCRYPT
 
@@ -565,6 +656,9 @@ case "$DEPLOYMENT_MODE" in
   proxy_docker_caddy)
     compose_base="docker-compose.proxy-docker-caddy"
     ;;
+  proxy_docker_traefik)
+    compose_base="docker-compose.proxy-docker-traefik"
+    ;;
 esac
 
 if [[ "$NETBIRD_STORE_CONFIG_ENGINE" == "postgres" && "$NETBIRD_USE_INTERNAL_POSTGRES" == "true" ]]; then
@@ -583,6 +677,12 @@ if [[ "$DEPLOYMENT_MODE" == "proxy_docker_caddy" ]]; then
   echo "Generated Caddyfile at $artifacts_path/Caddyfile"
 fi
 
+# Generate Traefik dynamic config only in proxy_docker_traefik mode
+if [[ "$DEPLOYMENT_MODE" == "proxy_docker_traefik" ]]; then
+  envsubst <traefik-dynamic.yml.tmpl >"$artifacts_path/traefik-dynamic.yml"
+  echo "Generated Traefik dynamic config at $artifacts_path/traefik-dynamic.yml"
+fi
+
 echo ""
 echo "Generated files in $artifacts_path:"
 echo "  - docker-compose.yml (from $compose_tmpl)"
@@ -591,25 +691,29 @@ echo "  - turnserver.conf"
 if [[ "$DEPLOYMENT_MODE" == "proxy_docker_caddy" ]]; then
   echo "  - Caddyfile"
 fi
+if [[ "$DEPLOYMENT_MODE" == "proxy_docker_traefik" ]]; then
+  echo "  - traefik-dynamic.yml"
+fi
 echo ""
 echo "You can now start NetBird with:"
 echo "  docker compose -f $artifacts_path/docker-compose.yml up -d"
 
 ########################################
-# Optional: integrate NetBird into Caddy (proxy_docker only)
+# Optional: integrate NetBird into reverse proxy (proxy_docker only)
 ########################################
 
 if [[ "$DEPLOYMENT_MODE" == "proxy_docker" ]]; then
   echo ""
-  echo "NetBird is configured to run behind Caddy in Docker (proxy_docker mode)."
+  echo "NetBird is configured to run behind an external reverse proxy (proxy_docker mode)."
 
-  # Build snippet for Caddy
+  # ---- Caddy snippet ----
   NETBIRD_CADDY_SNIPPET="$(generate_caddy_snippet_proxy_docker)"
 
   echo ""
-  echo "---------------------------------------------------------------------"
-  echo "Caddy snippet for NetBird (Caddy in Docker, network: ${NETBIRD_REVERSE_PROXY_NETWORK}):"
-  echo "---------------------------------------------------------------------"
+  echo "====================================================================="
+  echo "  CADDY CONFIG SNIPPET"
+  echo "  (Caddy in Docker, network: ${NETBIRD_REVERSE_PROXY_NETWORK})"
+  echo "====================================================================="
   printf "%s\n" "$NETBIRD_CADDY_SNIPPET"
   echo "---------------------------------------------------------------------"
   echo ""
@@ -646,6 +750,40 @@ if [[ "$DEPLOYMENT_MODE" == "proxy_docker" ]]; then
       fi
     fi
   else
-    echo "Skipping automatic Caddy integration. You can copy the snippet above into your Caddyfile manually."
+    echo "Skipping automatic Caddy integration."
   fi
+
+  # ---- Traefik snippet ----
+  NETBIRD_TRAEFIK_SNIPPET="$(generate_traefik_snippet_proxy_docker)"
+
+  echo ""
+  echo "====================================================================="
+  echo "  TRAEFIK DYNAMIC CONFIG SNIPPET"
+  echo "  (Traefik in Docker, network: ${NETBIRD_REVERSE_PROXY_NETWORK})"
+  echo "  Save this as a .yml file in your Traefik dynamic config directory."
+  echo "====================================================================="
+  printf "%s\n" "$NETBIRD_TRAEFIK_SNIPPET"
+  echo "---------------------------------------------------------------------"
+  echo ""
+
+  # Also write the Traefik snippet to artifacts for convenience
+  printf "%s\n" "$NETBIRD_TRAEFIK_SNIPPET" > "$artifacts_path/traefik-netbird.yml"
+  echo "Traefik dynamic config also saved to: $artifacts_path/traefik-netbird.yml"
+  echo "Copy this file to your Traefik dynamic configuration directory if using Traefik."
+fi
+
+########################################
+# Info: proxy_docker_traefik mode
+########################################
+
+if [[ "$DEPLOYMENT_MODE" == "proxy_docker_traefik" ]]; then
+  echo ""
+  echo "NetBird is configured with an integrated Traefik reverse proxy."
+  echo "Traefik will handle TLS termination via Let's Encrypt."
+  echo ""
+  echo "The generated traefik-dynamic.yml is included for reference."
+  echo "In this mode, routing is handled via Docker labels in docker-compose.yml."
+  echo ""
+  echo "You can deploy this as a Portainer stack by importing:"
+  echo "  $artifacts_path/docker-compose.yml"
 fi
