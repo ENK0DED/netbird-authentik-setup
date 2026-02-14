@@ -1,0 +1,203 @@
+x-default: &default
+  restart: "unless-stopped"
+  logging:
+    driver: "json-file"
+    options:
+      max-size: "500m"
+      max-file: "2"
+
+networks:
+  default: {}
+  reverse_proxy:
+    external: false
+    name: ${NETBIRD_REVERSE_PROXY_NETWORK}
+
+services:
+  traefik:
+    <<: *default
+    image: traefik:v3.4
+    container_name: traefik
+    command:
+      - "--providers.docker=true"
+      - "--providers.docker.exposedByDefault=false"
+      - "--providers.docker.network=${NETBIRD_REVERSE_PROXY_NETWORK}"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--entrypoints.web.http.redirections.entryPoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entryPoint.scheme=https"
+      - "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web"
+      - "--certificatesresolvers.letsencrypt.acme.email=${NETBIRD_LETSENCRYPT_EMAIL}"
+      - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik_data:/letsencrypt
+    networks:
+      - reverse_proxy
+
+  dashboard:
+    <<: *default
+    image: netbirdio/dashboard:$NETBIRD_DASHBOARD_TAG
+    labels:
+      - "traefik.enable=true"
+      # Dashboard catch-all (lowest priority)
+      - "traefik.http.routers.nb-dashboard.rule=Host(`$NETBIRD_DOMAIN`)"
+      - "traefik.http.routers.nb-dashboard.entrypoints=websecure"
+      - "traefik.http.routers.nb-dashboard.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.nb-dashboard.priority=1"
+      - "traefik.http.routers.nb-dashboard.middlewares=nb-security-headers@docker"
+      - "traefik.http.services.nb-dashboard.loadbalancer.server.port=$NETBIRD_DASHBOARD_PORT"
+      # Security headers middleware (defined once, used by all routers)
+      - "traefik.http.middlewares.nb-security-headers.headers.stsSeconds=3600"
+      - "traefik.http.middlewares.nb-security-headers.headers.contentTypeNosniff=true"
+      - "traefik.http.middlewares.nb-security-headers.headers.frameDeny=true"
+      - "traefik.http.middlewares.nb-security-headers.headers.referrerPolicy=strict-origin-when-cross-origin"
+      - "traefik.http.middlewares.nb-security-headers.headers.customResponseHeaders.Server="
+    environment:
+      - NETBIRD_MGMT_API_ENDPOINT=$NETBIRD_MGMT_API_ENDPOINT
+      - NETBIRD_MGMT_GRPC_API_ENDPOINT=$NETBIRD_MGMT_API_ENDPOINT
+      - AUTH_AUDIENCE=$NETBIRD_DASH_AUTH_AUDIENCE
+      - AUTH_CLIENT_ID=$NETBIRD_AUTH_CLIENT_ID
+      - AUTH_CLIENT_SECRET=$NETBIRD_AUTH_CLIENT_SECRET
+      - AUTH_AUTHORITY=$NETBIRD_AUTH_AUTHORITY
+      - USE_AUTH0=$NETBIRD_USE_AUTH0
+      - AUTH_SUPPORTED_SCOPES=$NETBIRD_AUTH_SUPPORTED_SCOPES
+      - AUTH_REDIRECT_URI=$NETBIRD_AUTH_REDIRECT_URI
+      - AUTH_SILENT_REDIRECT_URI=$NETBIRD_AUTH_SILENT_REDIRECT_URI
+      - NETBIRD_TOKEN_SOURCE=$NETBIRD_TOKEN_SOURCE
+      - NGINX_SSL_PORT=443
+      - LETSENCRYPT_DOMAIN=
+      - LETSENCRYPT_EMAIL=
+    volumes:
+      - $LETSENCRYPT_DATA_PATH:/etc/letsencrypt/
+    networks:
+      - default
+      - reverse_proxy
+
+  signal:
+    <<: *default
+    image: netbirdio/signal:$NETBIRD_SIGNAL_TAG
+    depends_on:
+      - dashboard
+    labels:
+      - "traefik.enable=true"
+      # Signal WebSocket
+      - "traefik.http.routers.nb-signal-ws.rule=Host(`$NETBIRD_DOMAIN`) && PathPrefix(`/ws-proxy/signal`)"
+      - "traefik.http.routers.nb-signal-ws.entrypoints=websecure"
+      - "traefik.http.routers.nb-signal-ws.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.nb-signal-ws.priority=20"
+      - "traefik.http.routers.nb-signal-ws.service=nb-signal-http"
+      - "traefik.http.routers.nb-signal-ws.middlewares=nb-security-headers@docker"
+      # Signal gRPC
+      - "traefik.http.routers.nb-signal-grpc.rule=Host(`$NETBIRD_DOMAIN`) && PathPrefix(`/signalexchange.SignalExchange/`)"
+      - "traefik.http.routers.nb-signal-grpc.entrypoints=websecure"
+      - "traefik.http.routers.nb-signal-grpc.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.nb-signal-grpc.priority=20"
+      - "traefik.http.routers.nb-signal-grpc.service=nb-signal-grpc"
+      # Signal services
+      - "traefik.http.services.nb-signal-http.loadbalancer.server.port=$NETBIRD_SIGNAL_PORT"
+      - "traefik.http.services.nb-signal-grpc.loadbalancer.server.port=$NETBIRD_SIGNAL_PORT"
+      - "traefik.http.services.nb-signal-grpc.loadbalancer.server.scheme=h2c"
+    volumes:
+      - $SIGNAL_DATA_PATH:/var/lib/netbird
+      - $LETSENCRYPT_DATA_PATH:/etc/letsencrypt:ro
+    command: [
+      "--log-file", "console"
+    ]
+    networks:
+      - default
+      - reverse_proxy
+
+  relay:
+    <<: *default
+    image: netbirdio/relay:$NETBIRD_RELAY_TAG
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.nb-relay.rule=Host(`$NETBIRD_DOMAIN`) && PathPrefix(`/relay`)"
+      - "traefik.http.routers.nb-relay.entrypoints=websecure"
+      - "traefik.http.routers.nb-relay.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.nb-relay.priority=10"
+      - "traefik.http.routers.nb-relay.middlewares=nb-security-headers@docker"
+      - "traefik.http.services.nb-relay.loadbalancer.server.port=$NETBIRD_RELAY_PORT"
+    environment:
+      - NB_LOG_LEVEL=info
+      - NB_LISTEN_ADDRESS=:$NETBIRD_RELAY_PORT
+      - NB_EXPOSED_ADDRESS=$NETBIRD_RELAY_ENDPOINT
+      - NB_AUTH_SECRET=$NETBIRD_RELAY_AUTH_SECRET
+    networks:
+      - default
+      - reverse_proxy
+
+  management:
+    <<: *default
+    image: netbirdio/management:$NETBIRD_MANAGEMENT_TAG
+    depends_on:
+      - dashboard
+      - postgres
+    labels:
+      - "traefik.enable=true"
+      # Management API
+      - "traefik.http.routers.nb-mgmt-api.rule=Host(`$NETBIRD_DOMAIN`) && PathPrefix(`/api/`)"
+      - "traefik.http.routers.nb-mgmt-api.entrypoints=websecure"
+      - "traefik.http.routers.nb-mgmt-api.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.nb-mgmt-api.priority=20"
+      - "traefik.http.routers.nb-mgmt-api.service=nb-mgmt-http"
+      - "traefik.http.routers.nb-mgmt-api.middlewares=nb-security-headers@docker"
+      # Management WebSocket
+      - "traefik.http.routers.nb-mgmt-ws.rule=Host(`$NETBIRD_DOMAIN`) && PathPrefix(`/ws-proxy/management`)"
+      - "traefik.http.routers.nb-mgmt-ws.entrypoints=websecure"
+      - "traefik.http.routers.nb-mgmt-ws.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.nb-mgmt-ws.priority=20"
+      - "traefik.http.routers.nb-mgmt-ws.service=nb-mgmt-http"
+      - "traefik.http.routers.nb-mgmt-ws.middlewares=nb-security-headers@docker"
+      # Management gRPC
+      - "traefik.http.routers.nb-mgmt-grpc.rule=Host(`$NETBIRD_DOMAIN`) && PathPrefix(`/management.ManagementService/`)"
+      - "traefik.http.routers.nb-mgmt-grpc.entrypoints=websecure"
+      - "traefik.http.routers.nb-mgmt-grpc.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.nb-mgmt-grpc.priority=20"
+      - "traefik.http.routers.nb-mgmt-grpc.service=nb-mgmt-grpc"
+      # Management services
+      - "traefik.http.services.nb-mgmt-http.loadbalancer.server.port=$NETBIRD_MGMT_API_PORT"
+      - "traefik.http.services.nb-mgmt-grpc.loadbalancer.server.port=$NETBIRD_MGMT_API_PORT"
+      - "traefik.http.services.nb-mgmt-grpc.loadbalancer.server.scheme=h2c"
+    volumes:
+      - $MGMT_DATA_PATH:/var/lib/netbird
+      - $LETSENCRYPT_DATA_PATH:/etc/letsencrypt:ro
+      - ./management.json:/etc/netbird/management.json
+    command: [
+      "--port", "$NETBIRD_MGMT_API_PORT",
+      "--log-file", "console",
+      "--log-level", "info",
+      "--disable-anonymous-metrics=$NETBIRD_DISABLE_ANONYMOUS_METRICS",
+      "--single-account-mode-domain=$NETBIRD_MGMT_SINGLE_ACCOUNT_MODE_DOMAIN",
+      "--dns-domain=$NETBIRD_MGMT_DNS_DOMAIN"
+    ]
+    environment:
+      - NETBIRD_STORE_ENGINE_POSTGRES_DSN=$NETBIRD_STORE_ENGINE_POSTGRES_DSN
+      - NETBIRD_STORE_ENGINE_MYSQL_DSN=$NETBIRD_STORE_ENGINE_MYSQL_DSN
+    networks:
+      - default
+      - reverse_proxy
+
+  coturn:
+    <<: *default
+    image: coturn/coturn:$COTURN_TAG
+    volumes:
+      - ./turnserver.conf:/etc/turnserver.conf:ro
+    network_mode: host
+    command:
+      - -c /etc/turnserver.conf
+
+  postgres:
+    <<: *default
+    image: postgres:18-alpine
+    environment:
+      - POSTGRES_DB=$NETBIRD_POSTGRES_DB
+      - POSTGRES_USER=$NETBIRD_POSTGRES_USER
+      - POSTGRES_PASSWORD=$NETBIRD_POSTGRES_PASSWORD
+    volumes:
+      - $POSTGRES_DATA_PATH:/var/lib/postgresql/data
+    networks:
+      - default
